@@ -8,12 +8,12 @@
 
 // ---------------- 1. Study area ----------------
 // A public boundary, so anyone can run this script.
-// CHECK: confirm these names match your study area in FAO GAUL
-// (print the collection and inspect ADM2_NAME if the count below is 0).
-var districts = ['Upper Dir', 'Lower Dir'];
-var ROI = ee.FeatureCollection('FAO/GAUL/2015/level2')
+// Islamabad Capital Territory. The name is spelled differently in some boundary
+// datasets, so the filter accepts the common variants.
+var names = ['Islamabad', 'Federal Capital Territory', 'Islamabad Capital Territory'];
+var ROI = ee.FeatureCollection('FAO/GAUL/2015/level1')
   .filter(ee.Filter.eq('ADM0_NAME', 'Pakistan'))
-  .filter(ee.Filter.inList('ADM2_NAME', districts));
+  .filter(ee.Filter.inList('ADM1_NAME', names));
 print('ROI features (must be > 0):', ROI.size());
 Map.centerObject(ROI, 9);
 
@@ -23,7 +23,7 @@ var START = '2022-01-01';
 var END   = '2023-01-01';   // filterDate end is exclusive, so this covers all of 2022
 var SCALE = 10;             // Sentinel-1 GRD pixel size (m)
 var SEED  = 42;             // fixed seed so the split and the forest are reproducible
-var EXPORT_CRS = 'EPSG:32643'; // set the UTM zone for your area (zone 42N/43N boundary is at 72°E)
+var EXPORT_CRS = 'EPSG:32643'; // WGS 84 / UTM zone 43N, correct for Islamabad
 
 
 // ---------------- 3. Sentinel-1 collection ----------------
@@ -76,12 +76,29 @@ Map.addLayer(composite.clip(ROI),
 
 
 // ---------------- 5. Training data ----------------
-// Training points are drawn in the Code Editor as three FeatureCollection imports,
-// each with a NUMERIC property 'landcover':
-//   builtup = 0, vegetation = 1, barren = 2
-// To let others run this script, export the points as an asset and share it
-// publicly, then load it here with ee.FeatureCollection('projects/.../points').
-var samples = builtup.merge(vegetation).merge(barren);
+// Labels are taken from ESA WorldCover 2021 (10 m), so the script runs without
+// hand-drawn points. WorldCover classes are grouped into our 3 classes:
+//   50 Built-up                                   -> 0 Built-up
+//   10 Trees, 20 Shrubland, 30 Grassland, 40 Crops -> 1 Vegetation
+//   60 Bare / sparse vegetation                   -> 2 Barren
+// Other classes (water, snow, wetland, moss) are left out (masked by remap).
+// NOTE: accuracy below then measures agreement with WorldCover, not true
+// ground accuracy. Replace with your own verified points for real results.
+var worldcover = ee.ImageCollection('ESA/WorldCover/v200').first();
+var labels = worldcover
+  .remap([50, 10, 20, 30, 40, 60], [0, 1, 1, 1, 1, 2])
+  .rename('landcover');
+
+var samples = labels.stratifiedSample({
+  numPoints: 300,          // points per class
+  classBand: 'landcover',
+  region: ROI.geometry(),
+  scale: 10,
+  seed: SEED,
+  geometries: true
+});
+print('Label points per class:', samples.aggregate_histogram('landcover'));
+Map.addLayer(samples, {color: 'black'}, 'Training points', false);
 
 var classNames = ['Built-up', 'Vegetation', 'Barren'];
 var palette    = ['#d7301f', '#1a9850', '#fee08b'];
